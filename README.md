@@ -30,7 +30,7 @@ workflow lists what the calling job needs in its header comment.
 ## Workflows
 
 | Workflow | What it does |
-|---|---|
+| --- | --- |
 | [`pages.yml`](.github/workflows/pages.yml) | Builds a MkDocs or Jekyll site and deploys it to GitHub Pages (pull requests only build) |
 | [`python-ci.yml`](.github/workflows/python-ci.yml) | Sets up Python, installs, runs check commands (one per line), with an optional path filter |
 | [`node-ci.yml`](.github/workflows/node-ci.yml) | Sets up Node from `.nvmrc`, runs `npm ci` and check commands, with an optional path filter |
@@ -45,7 +45,7 @@ workflow lists what the calling job needs in its header comment.
 ## Composite actions
 
 | Action | What it does |
-|---|---|
+| --- | --- |
 | [`gate`](actions/gate/action.yml) | Fails unless every needed job succeeded or was skipped |
 | [`path-match`](actions/path-match/action.yml) | Reports whether the event changed any of the given path globs |
 | [`changed-dirs`](actions/changed-dirs/action.yml) | Lists the directories holding a marker file that the event touched, as a JSON matrix |

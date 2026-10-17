@@ -113,8 +113,9 @@ jobs:
         working-directory: ${{ inputs.source }}
         run: mkdocs build --strict --site-dir "$GITHUB_WORKSPACE/_site"
 
+      # Only when deploying: it fails in repositories without Pages enabled.
       - uses: actions/configure-pages@v6
-        if: inputs.generator == 'jekyll'
+        if: inputs.generator == 'jekyll' && inputs.deploy && github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
       - name: Build (Jekyll)
         if: inputs.generator == 'jekyll'
         uses: actions/jekyll-build-pages@v1
