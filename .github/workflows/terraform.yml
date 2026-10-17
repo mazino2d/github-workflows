@@ -1,0 +1,183 @@
+name: Terraform
+
+# Plan or apply every Terraform stack (a directory under `root` holding *.tf,
+# local `_modules` excluded) that the event touched, one matrix job per stack.
+#   mode: plan  → on pull requests; the plan is kept as one sticky comment per
+#                 stack, removed again once the stack has nothing to change
+#   mode: apply → on the default branch, or a manual run with `select`
+# Provider download hiccups are retried. The calling job needs: contents read,
+# plus pull-requests write for plan.
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: plan or apply
+        type: string
+        required: true
+      root:
+        type: string
+        default: terraform
+      select:
+        description: Stacks to run on workflow_dispatch (paths or base names; empty or "all" for every stack).
+        type: string
+        default: ""
+      all-on:
+        description: Extended regex of changed paths that select every stack.
+        type: string
+        default: ""
+      terraform-version:
+        type: string
+        default: "1.14.8"
+    secrets:
+      TF_API_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      dirs: ${{ steps.changed.outputs.dirs }}
+      any: ${{ steps.changed.outputs.any }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: mazino2d/github-workflows/actions/changed-dirs@v1
+        id: changed
+        with:
+          root: ${{ inputs.root }}
+          marker: "*.tf"
+          select: ${{ inputs.select }}
+          all-on: ${{ inputs.all-on }}
+
+  plan:
+    needs: detect
+    if: inputs.mode == 'plan' && needs.detect.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: ${{ fromJSON(needs.detect.outputs.dirs) }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.stack }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ inputs.terraform-version }}
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+          terraform_wrapper: false
+
+      - name: Plan
+        id: plan
+        run: |
+          retryable='Failed to install provider|connection reset by peer|Failed to query available provider packages'
+          code=0
+          for i in 1 2 3; do
+            code=0
+            { terraform init -input=false -no-color && terraform plan -input=false -no-color -detailed-exitcode; } > "$RUNNER_TEMP/plan.txt" 2>&1 || code=$?
+            cat "$RUNNER_TEMP/plan.txt"
+            if [ "$code" -ne 1 ] || ! grep -qE "$retryable" "$RUNNER_TEMP/plan.txt"; then break; fi
+            [ "$i" -lt 3 ] && { echo "Provider download failed, retrying in 15s ($i/3)"; sleep 15; }
+          done
+          # -detailed-exitcode: 0 = no changes, 2 = changes, anything else = error
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
+      - name: Write comment
+        id: comment
+        if: github.event_name == 'pull_request'
+        env:
+          CODE: ${{ steps.plan.outputs.code }}
+          STACK: ${{ matrix.stack }}
+        run: |
+          if [ "$CODE" = "0" ]; then echo "file=" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$CODE" = "2" ]; then
+            status="✅"
+            summary="$(grep -E '^Plan: ' "$RUNNER_TEMP/plan.txt" | head -1)"
+          else
+            status="❌"
+            summary="Plan failed — see details"
+          fi
+          {
+            echo "## ${status} \`${STACK}\`"
+            echo "**${summary:-Changes to outputs only}**"
+            echo
+            echo '<details><summary>Full output</summary>'
+            echo
+            echo '```'
+            tail -c 60000 "$RUNNER_TEMP/plan.txt"
+            echo '```'
+            echo '</details>'
+          } > "$RUNNER_TEMP/comment.md"
+          echo "file=$RUNNER_TEMP/comment.md" >> "$GITHUB_OUTPUT"
+
+      - uses: mazino2d/github-workflows/actions/sticky-comment@v1
+        if: github.event_name == 'pull_request'
+        with:
+          marker: tf-plan:${{ matrix.stack }}
+          body-file: ${{ steps.comment.outputs.file }}
+
+      - name: Fail if plan failed
+        if: steps.plan.outputs.code != '0' && steps.plan.outputs.code != '2'
+        run: exit 1
+
+  apply:
+    needs: detect
+    if: inputs.mode == 'apply' && needs.detect.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: terraform-apply-${{ matrix.stack }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: ${{ fromJSON(needs.detect.outputs.dirs) }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.stack }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ inputs.terraform-version }}
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+          terraform_wrapper: false
+
+      - name: Apply
+        run: |
+          retryable='Failed to install provider|connection reset by peer|Failed to query available provider packages'
+          code=0
+          for i in 1 2 3; do
+            code=0
+            echo "::group::Attempt $i/3"
+            { terraform init -input=false -no-color && terraform apply -input=false -no-color -auto-approve; } > "$RUNNER_TEMP/apply.txt" 2>&1 || code=$?
+            cat "$RUNNER_TEMP/apply.txt"
+            echo "::endgroup::"
+            if [ "$code" -eq 0 ] || ! grep -qE "$retryable" "$RUNNER_TEMP/apply.txt"; then break; fi
+            [ "$i" -lt 3 ] && { echo "Provider download failed, retrying in 15s ($i/3)"; sleep 15; }
+          done
+          if [ "$code" -ne 0 ]; then
+            echo "::error::Apply failed with exit code $code"
+            tail -n 60 "$RUNNER_TEMP/apply.txt"
+          fi
+          exit "$code"
+
+  gate:
+    needs: [detect, plan, apply]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: mazino2d/github-workflows/actions/gate@v1
+        with:
+          needs: ${{ toJSON(needs) }}

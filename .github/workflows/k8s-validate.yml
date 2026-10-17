@@ -1,0 +1,86 @@
+name: Kubernetes validate
+
+# Lint every Helm chart and render every Kustomize overlay (with Helm inflation)
+# so broken manifests fail the pull request instead of the Argo CD sync.
+on:
+  workflow_call:
+    inputs:
+      paths:
+        description: Newline-separated path globs that trigger validation.
+        type: string
+        default: kubernetes/**
+      charts:
+        description: Glob of Helm chart directories.
+        type: string
+        default: kubernetes/charts/*/
+      overlays:
+        description: Glob of Kustomize directories to build.
+        type: string
+        default: kubernetes/clusters/*/*/
+      kustomize-version:
+        type: string
+        default: v5.8.1
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      match: ${{ steps.filter.outputs.match }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: mazino2d/github-workflows/actions/path-match@v1
+        id: filter
+        with:
+          paths: ${{ inputs.paths }}
+
+  validate:
+    needs: changes
+    if: needs.changes.outputs.match == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+
+      - name: Install kustomize
+        env:
+          VERSION: ${{ inputs.kustomize-version }}
+        run: |
+          curl -sSfL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${VERSION}/kustomize_${VERSION}_linux_amd64.tar.gz" |
+            sudo tar xz -C /usr/local/bin kustomize
+
+      - name: Lint Helm charts
+        env:
+          CHARTS: ${{ inputs.charts }}
+        run: |
+          shopt -s nullglob
+          # shellcheck disable=SC2086 # the glob must expand
+          for chart in $CHARTS; do
+            echo "==> Linting $chart"
+            helm lint "$chart"
+          done
+
+      - name: Build Kustomize overlays
+        env:
+          OVERLAYS: ${{ inputs.overlays }}
+        run: |
+          shopt -s nullglob
+          # shellcheck disable=SC2086 # the glob must expand
+          for dir in $OVERLAYS; do
+            echo "==> Building $dir"
+            kustomize build --enable-helm "$dir" > /dev/null
+          done
+
+  gate:
+    needs: [changes, validate]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: mazino2d/github-workflows/actions/gate@v1
+        with:
+          needs: ${{ toJSON(needs) }}

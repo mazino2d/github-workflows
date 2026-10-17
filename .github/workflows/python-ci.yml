@@ -1,0 +1,84 @@
+name: Python CI
+
+# Set up Python, install the project and run a list of check commands, one
+# line per command (each shows as its own log group). With `paths`, the checks
+# only run when a matching file changed; the `gate` job reports either way.
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        type: string
+        default: "3.12"
+      install:
+        description: Install command.
+        type: string
+        default: pip install -e ".[dev]"
+      run:
+        description: Newline-separated commands; each must succeed.
+        type: string
+        required: true
+      working-directory:
+        type: string
+        default: "."
+      paths:
+        description: Newline-separated path globs; when set, checks are skipped unless one changed.
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      match: ${{ steps.filter.outputs.match }}
+    steps:
+      - uses: actions/checkout@v7
+        if: inputs.paths != ''
+      - uses: mazino2d/github-workflows/actions/path-match@v1
+        id: filter
+        with:
+          paths: ${{ inputs.paths }}
+
+  check:
+    needs: changes
+    if: needs.changes.outputs.match == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+      - name: Install
+        env:
+          CMD: ${{ inputs.install }}
+        run: bash -ec "$CMD" < /dev/null
+      - name: Run checks
+        env:
+          RUN: ${{ inputs.run }}
+        run: |
+          while IFS= read -r cmd; do
+            [ -n "${cmd//[[:space:]]/}" ] || continue
+            echo "::group::$cmd"
+            status=0
+            bash -ec "$cmd" < /dev/null || status=$?
+            echo "::endgroup::"
+            if [ "$status" -ne 0 ]; then echo "::error::'$cmd' failed (exit $status)"; exit "$status"; fi
+          done <<< "$RUN"
+
+  gate:
+    needs: [changes, check]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: mazino2d/github-workflows/actions/gate@v1
+        with:
+          needs: ${{ toJSON(needs) }}

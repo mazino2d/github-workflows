@@ -1,0 +1,45 @@
+name: Sticky comment
+description: >
+  Keep one comment per marker on a pull request: create it, update it in place,
+  or delete it when there is nothing to say.
+
+inputs:
+  marker:
+    description: Unique key; stored as an HTML comment at the top of the body.
+    required: true
+  body-file:
+    description: File holding the comment body. Leave empty to delete the comment.
+    required: false
+    default: ""
+  number:
+    description: Pull request number.
+    required: false
+    default: ${{ github.event.pull_request.number }}
+  token:
+    description: Token with pull-requests write access.
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Upsert comment
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        MARKER: "<!-- ${{ inputs.marker }} -->"
+        BODY_FILE: ${{ inputs.body-file }}
+        PR: ${{ inputs.number }}
+      run: |
+        id="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+          --jq ".[] | select(.body | startswith(\"$MARKER\")) | .id" | head -n1)"
+        if [ -z "$BODY_FILE" ]; then
+          if [ -n "$id" ]; then gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/comments/$id"; fi
+          exit 0
+        fi
+        { echo "$MARKER"; cat "$BODY_FILE"; } > "$RUNNER_TEMP/sticky-comment.md"
+        if [ -n "$id" ]; then
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@"$RUNNER_TEMP/sticky-comment.md" > /dev/null
+        else
+          gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@"$RUNNER_TEMP/sticky-comment.md" > /dev/null
+        fi

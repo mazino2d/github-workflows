@@ -1,0 +1,56 @@
+name: Lint
+
+# Repository hygiene checks:
+#   actionlint   – workflow syntax, expressions, action inputs, shellcheck on run:
+#   markdownlint – Markdown style (config from the repo's .markdownlint* file)
+on:
+  workflow_call:
+    inputs:
+      actionlint:
+        type: boolean
+        default: true
+      markdownlint:
+        type: boolean
+        default: false
+      markdown-globs:
+        type: string
+        default: |
+          **/*.md
+          !**/node_modules/**
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    if: inputs.actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: actionlint
+        env:
+          VERSION: 1.7.12
+        run: |
+          bash <(curl -sSfL "https://raw.githubusercontent.com/rhysd/actionlint/v${VERSION}/scripts/download-actionlint.bash") "$VERSION"
+          ./actionlint -color
+
+  markdownlint:
+    if: inputs.markdownlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DavidAnson/markdownlint-cli2-action@v24
+        with:
+          globs: ${{ inputs.markdown-globs }}
+
+  gate:
+    needs: [actionlint, markdownlint]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: mazino2d/github-workflows/actions/gate@v1
+        with:
+          needs: ${{ toJSON(needs) }}

@@ -1,0 +1,39 @@
+name: Release
+
+# release-please keeps a release PR open from conventional commits on main.
+# Merging it tags vX.Y.Z; this then moves the major tag (v1) to the same
+# commit, which is the ref every caller uses.
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: googleapis/release-please-action@v5
+        id: release
+        with:
+          release-type: simple
+
+      - uses: actions/checkout@v7
+        if: steps.release.outputs.release_created
+      - name: Move major tag
+        if: steps.release.outputs.release_created
+        env:
+          MAJOR: v${{ steps.release.outputs.major }}
+          SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          git tag -f "$MAJOR" "$SHA"
+          git push -f origin "refs/tags/$MAJOR"

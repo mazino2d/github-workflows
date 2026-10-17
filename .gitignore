@@ -1,0 +1,5 @@
+.mkdocs/
+_site/
+site/
+.terraform/
+*.tfstate*

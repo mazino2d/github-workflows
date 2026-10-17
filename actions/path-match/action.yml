@@ -1,0 +1,44 @@
+name: Path match
+description: >
+  Report whether the current event changed any of the given path globs.
+  An empty list always matches. Needs a prior checkout.
+
+inputs:
+  paths:
+    description: Newline-separated path globs (picomatch, "!" to exclude).
+    required: false
+    default: ""
+
+outputs:
+  match:
+    description: "'true' when a path changed or no paths were given."
+    value: ${{ inputs.paths == '' && 'true' || steps.filter.outputs.match }}
+
+runs:
+  using: composite
+  steps:
+    - name: Build filter
+      id: build
+      if: inputs.paths != ''
+      shell: bash
+      env:
+        PATHS: ${{ inputs.paths }}
+      run: |
+        {
+          echo 'filters<<EOF_FILTERS'
+          echo 'match:'
+          while IFS= read -r p; do
+            p="${p#"${p%%[![:space:]]*}"}"; p="${p%"${p##*[![:space:]]}"}"
+            [ -n "$p" ] && printf '  - %s\n' "$(jq -Rn --arg p "$p" '$p')"
+          done <<< "$PATHS"
+          echo 'EOF_FILTERS'
+        } >> "$GITHUB_OUTPUT"
+
+    - uses: dorny/paths-filter@v4
+      id: filter
+      if: inputs.paths != ''
+      with:
+        # No token: diff with git instead of the API, so callers need not
+        # grant pull-requests read.
+        token: ""
+        filters: ${{ steps.build.outputs.filters }}

@@ -1,0 +1,25 @@
+name: Gate
+description: >
+  Fail unless every needed job succeeded or was skipped. Use it as the last job
+  of a workflow so branch protection can require one stable check, however many
+  path-filtered jobs sit in front of it.
+
+inputs:
+  needs:
+    description: "toJSON(needs) of the gate job."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Check job results
+      shell: bash
+      env:
+        NEEDS: ${{ inputs.needs }}
+      run: |
+        jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$NEEDS"
+        failed="$(jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")' <<< "$NEEDS")"
+        if [ -n "$failed" ]; then
+          echo "::error::Jobs did not pass: $failed"
+          exit 1
+        fi

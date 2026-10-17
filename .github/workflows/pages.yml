@@ -1,0 +1,161 @@
+name: Pages
+
+# Build a static site and publish it to GitHub Pages.
+#   generator: mkdocs → `mkdocs build --strict` after fetching the shared base
+#                       config (mkdocs/base.yml) into .mkdocs/base.yml, so the
+#                       site's mkdocs.yml can start with `INHERIT: .mkdocs/base.yml`
+#   generator: jekyll → the same build GitHub Pages runs for branch publishing
+# Pull requests only build; other events also deploy when `deploy` is true.
+# The calling job needs: contents read, pages write, id-token write.
+on:
+  workflow_call:
+    inputs:
+      generator:
+        description: mkdocs or jekyll
+        type: string
+        required: true
+      source:
+        description: Site source directory (jekyll) or directory holding mkdocs.yml (mkdocs).
+        type: string
+        default: "."
+      deploy:
+        description: Deploy after building (never on pull requests).
+        type: boolean
+        default: true
+      paths:
+        description: Newline-separated path globs; when set, the build is skipped unless one changed.
+        type: string
+        default: ""
+      python-version:
+        type: string
+        default: "3.12"
+      install:
+        description: Command that installs MkDocs and its plugins.
+        type: string
+        default: pip install "mkdocs<2" "mkdocs-material>=9"
+      pre-build:
+        description: Commands to run before the build (e.g. generate API docs).
+        type: string
+        default: ""
+      post-build:
+        description: Commands to run after the build, from the repository root (e.g. copy extra files into the site).
+        type: string
+        default: ""
+      shared-ref:
+        description: Ref of mazino2d/github-workflows to take mkdocs/base.yml from.
+        type: string
+        default: v1
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      match: ${{ steps.filter.outputs.match }}
+    steps:
+      - uses: actions/checkout@v7
+        if: inputs.paths != ''
+      - uses: mazino2d/github-workflows/actions/path-match@v1
+        id: filter
+        with:
+          paths: ${{ inputs.paths }}
+
+  build:
+    needs: changes
+    if: needs.changes.outputs.match == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Fetch shared MkDocs config
+        if: inputs.generator == 'mkdocs'
+        uses: actions/checkout@v7
+        with:
+          repository: mazino2d/github-workflows
+          ref: ${{ inputs.shared-ref }}
+          path: .github-workflows
+          sparse-checkout: mkdocs
+          persist-credentials: false
+
+      - name: Link shared MkDocs config
+        if: inputs.generator == 'mkdocs'
+        env:
+          SOURCE: ${{ inputs.source }}
+        run: |
+          mkdir -p "$SOURCE/.mkdocs"
+          cp -r .github-workflows/mkdocs/. "$SOURCE/.mkdocs/"
+          rm -rf .github-workflows
+
+      - uses: actions/setup-python@v7
+        if: inputs.generator == 'mkdocs'
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+
+      - name: Install
+        if: inputs.generator == 'mkdocs'
+        env:
+          CMD: ${{ inputs.install }}
+        run: bash -ec "$CMD" < /dev/null
+
+      - name: Pre-build
+        if: inputs.pre-build != ''
+        env:
+          CMD: ${{ inputs.pre-build }}
+        run: bash -ec "$CMD" < /dev/null
+
+      - name: Build (MkDocs)
+        if: inputs.generator == 'mkdocs'
+        working-directory: ${{ inputs.source }}
+        run: mkdocs build --strict --site-dir "$GITHUB_WORKSPACE/_site"
+
+      - uses: actions/configure-pages@v6
+        if: inputs.generator == 'jekyll'
+      - name: Build (Jekyll)
+        if: inputs.generator == 'jekyll'
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: ${{ inputs.source }}
+          destination: ./_site
+
+      - name: Post-build
+        if: inputs.post-build != ''
+        env:
+          CMD: ${{ inputs.post-build }}
+        run: bash -ec "$CMD" < /dev/null
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    if: inputs.deploy && github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v5
+
+  gate:
+    needs: [changes, build, deploy]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: mazino2d/github-workflows/actions/gate@v1
+        with:
+          needs: ${{ toJSON(needs) }}

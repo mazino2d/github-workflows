@@ -1,0 +1,60 @@
+name: Flutter setup
+description: >
+  Install Flutter (cached), resolve packages and, optionally, produce the
+  gitignored generated sources (build_runner + gen-l10n).
+
+inputs:
+  flutter-version:
+    description: Flutter version or pattern; keep in step with the repo's dev container.
+    required: false
+    default: "3.47.x"
+  codegen:
+    description: Run build_runner and gen-l10n (needed by analyze and tests).
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - uses: subosito/flutter-action@v2
+      with:
+        flutter-version: ${{ inputs.flutter-version }}
+        channel: stable
+        cache: true
+
+    # On macOS, `pub get` copies Swift Package Manager plugins (Firebase) into
+    # build/ios/SourcePackages with rsync, which cannot create the missing
+    # parent directories on a fresh checkout.
+    - name: Prepare Swift package directory
+      if: runner.os == 'macOS'
+      shell: bash
+      run: mkdir -p build/ios/SourcePackages
+
+    - name: Install dependencies
+      shell: bash
+      run: flutter pub get
+
+    # build_runner output depends only on the sources it reads and the locked
+    # package versions, so an exact key hit lets us skip it entirely.
+    - name: Restore generated sources
+      if: inputs.codegen == 'true'
+      id: codegen-cache
+      uses: actions/cache@v6
+      with:
+        path: |
+          lib/**/*.g.dart
+          lib/**/*.freezed.dart
+        key: codegen-${{ runner.os }}-${{ hashFiles('pubspec.lock', 'build.yaml', 'lib/**/*.dart') }}
+
+    - name: Run code generation
+      if: inputs.codegen == 'true' && steps.codegen-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        if grep -q '^  build_runner:' pubspec.yaml; then
+          dart run build_runner build --delete-conflicting-outputs
+        fi
+
+    - name: Generate localizations
+      if: inputs.codegen == 'true' && hashFiles('l10n.yaml') != ''
+      shell: bash
+      run: flutter gen-l10n

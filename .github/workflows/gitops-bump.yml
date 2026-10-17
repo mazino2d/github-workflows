@@ -1,0 +1,92 @@
+name: GitOps bump
+
+# Point an environment of a GitOps repo at a new image tag: rewrite the `tag:`
+# that follows `repository: <image>` in a Helm values file, open a pull request
+# with a GitHub App token and enable auto-merge on it.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+      values-file:
+        description: Values file in the GitOps repo holding `repository:` and `tag:`.
+        type: string
+        required: true
+      image:
+        type: string
+        default: ghcr.io/${{ github.repository }}
+      environment:
+        type: string
+        default: dev
+      repository:
+        description: GitOps repository (owner/name).
+        type: string
+        default: mazino2d/everything-as-code
+      app-id:
+        description: ID of the GitHub App allowed to push to the GitOps repo.
+        type: string
+        required: true
+    secrets:
+      EAC_DEPLOYER_PRIVATE_KEY:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: gitops-bump-${{ inputs.repository }}-${{ inputs.values-file }}
+      cancel-in-progress: false
+    steps:
+      - name: Split repository
+        id: repo
+        env:
+          REPOSITORY: ${{ inputs.repository }}
+        run: echo "name=${REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.EAC_DEPLOYER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.repo.outputs.name }}
+
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository }}
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Update image tag
+        env:
+          VALUES_FILE: ${{ inputs.values-file }}
+          IMAGE: ${{ inputs.image }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          sed -i "\|repository: ${IMAGE}|,\|tag:| s|tag: .*|tag: ${TAG}|" "$VALUES_FILE"
+          grep -q "tag: ${TAG}" "$VALUES_FILE"
+          git diff
+
+      - name: Open pull request
+        id: pr
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          branch: bump/${{ github.event.repository.name }}-${{ inputs.environment }}
+          title: "chore: bump ${{ github.event.repository.name }} ${{ inputs.environment }} image to ${{ inputs.tag }}"
+          commit-message: "chore: bump ${{ github.event.repository.name }} ${{ inputs.environment }} image to ${{ inputs.tag }}"
+          body: |
+            Automated bump from ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}.
+          delete-branch: true
+
+      - name: Enable auto-merge
+        if: steps.pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR: ${{ steps.pr.outputs.pull-request-number }}
+          REPO: ${{ inputs.repository }}
+        run: gh pr merge "$PR" --repo "$REPO" --squash --auto

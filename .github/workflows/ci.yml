@@ -1,0 +1,149 @@
+name: CI
+
+# Self-test: lint everything, exercise the composite actions from this commit,
+# and call each reusable workflow from this commit against fixtures/. The
+# reusable workflows use the composite actions at @v1, so an action change
+# reaches them only after it is released.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    uses: ./.github/workflows/lint.yml
+    with:
+      markdownlint: true
+
+  actions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: changed-dirs finds stacks and skips local modules
+        id: dirs
+        uses: ./actions/changed-dirs
+        with:
+          root: fixtures/terraform
+          marker: "*.tf"
+          all-on: ^(fixtures/terraform/|actions/changed-dirs/)
+      - name: Check changed-dirs output
+        if: steps.dirs.outputs.any == 'true'
+        env:
+          DIRS: ${{ steps.dirs.outputs.dirs }}
+        run: |
+          echo "$DIRS"
+          test "$DIRS" = '["fixtures/terraform/alpha","fixtures/terraform/beta"]'
+
+      - name: path-match with no paths matches
+        id: nopaths
+        uses: ./actions/path-match
+      - run: test "${{ steps.nopaths.outputs.match }}" = "true"
+
+      - name: path-match on a path that never changes
+        id: nomatch
+        uses: ./actions/path-match
+        with:
+          paths: does-not-exist/**
+      - run: test "${{ steps.nomatch.outputs.match }}" = "false"
+
+      - name: gate passes success and skipped
+        uses: ./actions/gate
+        with:
+          needs: '{"a":{"result":"success"},"b":{"result":"skipped"}}'
+      - name: gate fails on failure
+        id: gate-fail
+        continue-on-error: true
+        uses: ./actions/gate
+        with:
+          needs: '{"a":{"result":"failure"}}'
+      - run: test "${{ steps.gate-fail.outcome }}" = "failure"
+
+  pages-mkdocs:
+    uses: ./.github/workflows/pages.yml
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    with:
+      generator: mkdocs
+      source: fixtures/mkdocs
+      deploy: false
+      shared-ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+  pages-jekyll:
+    uses: ./.github/workflows/pages.yml
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    with:
+      generator: jekyll
+      source: fixtures/jekyll
+      deploy: false
+
+  python:
+    uses: ./.github/workflows/python-ci.yml
+    with:
+      working-directory: fixtures/python
+      install: pip install -e ".[dev]"
+      run: |
+        python -c "import sys; print(sys.version)"
+        python -c "print('second command')"
+
+  node:
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      working-directory: fixtures/node
+      run: npm test
+
+  docker:
+    # Pull requests only, so the fixture image is never pushed.
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/docker.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      context: fixtures/docker
+      image: ghcr.io/mazino2d/github-workflows-fixture
+      test-commands: |
+        true
+        echo hello
+
+  terraform:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/terraform.yml
+    permissions:
+      contents: read
+      pull-requests: write
+    with:
+      mode: plan
+      root: fixtures/terraform
+      all-on: ^\.github/workflows/terraform\.yml$
+
+  k8s:
+    uses: ./.github/workflows/k8s-validate.yml
+    with:
+      paths: fixtures/kubernetes/**
+
+  ci-ok:
+    needs: [lint, actions, pages-mkdocs, pages-jekyll, python, node, docker, terraform, k8s]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./actions/gate
+        with:
+          needs: ${{ toJSON(needs) }}

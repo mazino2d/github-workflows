@@ -1,0 +1,102 @@
+name: Changed directories
+description: >
+  Find the units under a root directory (every directory holding a marker file,
+  such as a Terraform stack or a Docker build context) and select the ones the
+  current event touched. Pull requests diff against the base branch, pushes
+  against the previous head, and manual runs take an explicit selection.
+  Needs a checkout with full history (fetch-depth 0).
+
+inputs:
+  root:
+    description: Directory to search, e.g. terraform or docker.
+    required: true
+  marker:
+    description: File name pattern that marks a unit, e.g. "*.tf" or Dockerfile.
+    required: true
+  exclude:
+    description: Extended regex of unit paths to leave out (local modules by default).
+    required: false
+    default: "/_"
+  select:
+    description: >
+      Manual selection, space or newline separated, as full paths or base names.
+      Empty or "all" selects every unit. Only used on workflow_dispatch.
+    required: false
+    default: ""
+  all-on:
+    description: Extended regex of changed paths that select every unit, e.g. the calling workflow file.
+    required: false
+    default: ""
+
+outputs:
+  dirs:
+    description: JSON array of selected unit directories.
+    value: ${{ steps.find.outputs.dirs }}
+  any:
+    description: "'true' when at least one unit is selected."
+    value: ${{ steps.find.outputs.any }}
+
+runs:
+  using: composite
+  steps:
+    - name: Find changed units
+      id: find
+      shell: bash
+      env:
+        ROOT: ${{ inputs.root }}
+        MARKER: ${{ inputs.marker }}
+        EXCLUDE: ${{ inputs.exclude }}
+        SELECT: ${{ inputs.select }}
+        ALL_ON: ${{ inputs.all-on }}
+        EVENT: ${{ github.event_name }}
+        BASE_REF: ${{ github.base_ref }}
+        BEFORE: ${{ github.event.before }}
+      run: |
+        mapfile -t units < <(
+          find "$ROOT" -type f -name "$MARKER" -not -path '*/.terraform/*' -exec dirname {} \; |
+            { if [ -n "$EXCLUDE" ]; then grep -vE "$EXCLUDE" || true; else cat; fi; } | sort -u
+        )
+
+        selected=()
+        if [ "$EVENT" = "workflow_dispatch" ]; then
+          read -ra wanted <<< "$(tr '\n' ' ' <<< "$SELECT")"
+          if [ ${#wanted[@]} -eq 0 ] || [ "${wanted[*]}" = "all" ]; then
+            selected=("${units[@]}")
+          else
+            for unit in "${units[@]}"; do
+              for w in "${wanted[@]}"; do
+                if [ "$w" = "$unit" ] || [ "$w" = "$(basename "$unit")" ]; then selected+=("$unit"); fi
+              done
+            done
+          fi
+        else
+          if [ "$EVENT" = "pull_request" ] || [ "$EVENT" = "pull_request_target" ]; then
+            changed="$(git diff --name-only "origin/${BASE_REF}...HEAD")"
+          elif [[ "$BEFORE" =~ ^0*$ ]] || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            if git rev-parse -q --verify HEAD~1 > /dev/null; then
+              changed="$(git diff --name-only HEAD~1 HEAD)"
+            else
+              changed="$(git ls-files)"  # first commit: everything is new
+            fi
+          else
+            changed="$(git diff --name-only "${BEFORE}...HEAD")"
+          fi
+
+          if [ -n "$ALL_ON" ] && grep -qE "$ALL_ON" <<< "$changed"; then
+            selected=("${units[@]}")
+          else
+            for unit in "${units[@]}"; do
+              if grep -q "^${unit}/" <<< "$changed"; then selected+=("$unit"); fi
+            done
+          fi
+        fi
+
+        if [ ${#selected[@]} -gt 0 ]; then
+          echo "Selected: ${selected[*]}"
+          echo "any=true" >> "$GITHUB_OUTPUT"
+          echo "dirs=$(printf '%s\n' "${selected[@]}" | jq -R . | jq -cs .)" >> "$GITHUB_OUTPUT"
+        else
+          echo "Nothing selected"
+          echo "any=false" >> "$GITHUB_OUTPUT"
+          echo "dirs=[]" >> "$GITHUB_OUTPUT"
+        fi

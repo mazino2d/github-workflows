@@ -1,0 +1,4 @@
+INHERIT: .mkdocs/base.yml
+site_name: Fixture
+nav:
+  - Home: index.md

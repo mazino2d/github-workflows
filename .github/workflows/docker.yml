@@ -1,0 +1,169 @@
+name: Docker
+
+# Build container images and push them to GHCR from the default branch.
+#   context: <dir>         one image, ghcr.io/<owner>/<repo> unless `image` is set
+#   discover-root: <dir>   every <dir>/*/Dockerfile is an image ghcr.io/<owner>/<name>;
+#                          only the ones the event touched are built
+# Tags: sha-<short sha>, plus latest on the default branch. A `.platforms`
+# file in a context (e.g. "linux/amd64,linux/arm64") overrides `platforms`.
+# The calling job needs: contents read, packages write.
+on:
+  workflow_call:
+    inputs:
+      context:
+        type: string
+        default: ""
+      image:
+        type: string
+        default: ""
+      discover-root:
+        type: string
+        default: ""
+      select:
+        description: Manual selection of image directories (discover mode, workflow_dispatch only).
+        type: string
+        default: ""
+      all-on:
+        description: Extended regex of changed paths that rebuild every image (discover mode).
+        type: string
+        default: ""
+      platforms:
+        type: string
+        default: linux/amd64
+      test-commands:
+        description: Newline-separated commands run inside the built image before pushing.
+        type: string
+        default: ""
+    outputs:
+      tag:
+        description: The immutable tag pushed (sha-<short sha>).
+        value: ${{ jobs.build.outputs.tag }}
+
+permissions:
+  contents: read
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      dirs: ${{ inputs.discover-root != '' && steps.changed.outputs.dirs || format('["{0}"]', inputs.context) }}
+      any: ${{ inputs.discover-root == '' || steps.changed.outputs.any == 'true' }}
+    steps:
+      - uses: actions/checkout@v7
+        if: inputs.discover-root != ''
+        with:
+          fetch-depth: 0
+      - uses: mazino2d/github-workflows/actions/changed-dirs@v1
+        if: inputs.discover-root != ''
+        id: changed
+        with:
+          root: ${{ inputs.discover-root }}
+          marker: Dockerfile
+          exclude: ""
+          select: ${{ inputs.select }}
+          all-on: ${{ inputs.all-on }}
+
+  build:
+    needs: detect
+    if: needs.detect.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        context: ${{ fromJSON(needs.detect.outputs.dirs) }}
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve image
+        id: meta
+        env:
+          CONTEXT: ${{ matrix.context }}
+          IMAGE: ${{ inputs.image }}
+          DISCOVER: ${{ inputs.discover-root }}
+          PLATFORMS: ${{ inputs.platforms }}
+          PUSH: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          if [ -n "$IMAGE" ]; then image="$IMAGE"
+          elif [ -n "$DISCOVER" ]; then image="ghcr.io/${owner}/$(basename "$CONTEXT")"
+          else image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          fi
+          platforms="$PLATFORMS"
+          if [ -f "$CONTEXT/.platforms" ]; then platforms="$(tr -d '[:space:]' < "$CONTEXT/.platforms")"; fi
+          {
+            echo "image=$image"
+            echo "name=$(basename "$image")"
+            echo "tag=sha-${GITHUB_SHA::7}"
+            echo "platforms=$platforms"
+            echo "push=$PUSH"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - uses: docker/metadata-action@v6
+        id: tags
+        with:
+          images: ${{ steps.meta.outputs.image }}
+          tags: |
+            type=raw,value=${{ steps.meta.outputs.tag }}
+            type=raw,value=latest,enable=${{ steps.meta.outputs.push }}
+
+      - uses: docker/setup-qemu-action@v4
+        if: contains(steps.meta.outputs.platforms, ',')
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build for tests
+        if: inputs.test-commands != ''
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          load: true
+          tags: local/ci:test
+          cache-from: type=gha,scope=${{ steps.meta.outputs.name }}
+          cache-to: type=gha,mode=max,scope=${{ steps.meta.outputs.name }}
+
+      - name: Test image
+        if: inputs.test-commands != ''
+        env:
+          RUN: ${{ inputs.test-commands }}
+        run: |
+          while IFS= read -r cmd; do
+            [ -n "${cmd//[[:space:]]/}" ] || continue
+            echo "::group::$cmd"
+            status=0
+            eval "docker run --rm local/ci:test $cmd" < /dev/null || status=$?
+            echo "::endgroup::"
+            if [ "$status" -ne 0 ]; then echo "::error::'$cmd' failed (exit $status)"; exit "$status"; fi
+          done <<< "$RUN"
+
+      - uses: docker/login-action@v4
+        if: steps.meta.outputs.push == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          platforms: ${{ steps.meta.outputs.platforms }}
+          push: ${{ steps.meta.outputs.push == 'true' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: ${{ steps.tags.outputs.labels }}
+          cache-from: type=gha,scope=${{ steps.meta.outputs.name }}
+          cache-to: type=gha,mode=max,scope=${{ steps.meta.outputs.name }}
+
+  gate:
+    needs: [detect, build]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: mazino2d/github-workflows/actions/gate@v1
+        with:
+          needs: ${{ toJSON(needs) }}

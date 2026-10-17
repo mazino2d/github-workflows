@@ -1,0 +1,48 @@
+# Shared base for MkDocs Material sites. A site's mkdocs.yml starts with
+#   INHERIT: .mkdocs/base.yml
+# and keeps only what is its own (site_*, nav, plugins, docs_dir, custom_dir…).
+# The pages workflow fetches this file into .mkdocs/ before building; locally,
+# fetch it the same way (see README). Mappings merge; lists in the site's file
+# replace the lists here.
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.top
+    - navigation.sections
+    - search.highlight
+    - search.suggest
+    - content.code.copy
+    - content.code.annotate
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/mazino2d
+
+validation:
+  links:
+    unrecognized_links: ignore
