@@ -36,7 +36,7 @@ jobs:
         with:
           root: fixtures/terraform
           marker: "*.tf"
-          all-on: ^(fixtures/terraform/|actions/changed-dirs/)
+          all-on: ^(fixtures/terraform/|actions/changed-dirs/|\.github/workflows/ci\.yml$)
       - name: Check changed-dirs output
         if: steps.dirs.outputs.any == 'true'
         env:
@@ -130,7 +130,7 @@ jobs:
     with:
       mode: plan
       root: fixtures/terraform
-      all-on: ^\.github/workflows/terraform\.yml$
+      all-on: ^(\.github/workflows/(terraform|ci)\.yml|actions/(changed-dirs|sticky-comment)/)
 
   k8s:
     uses: ./.github/workflows/k8s-validate.yml
