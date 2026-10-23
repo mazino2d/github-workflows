@@ -31,7 +31,7 @@ workflow lists what the calling job needs in its header comment.
 
 | Workflow | What it does |
 | --- | --- |
-| [`pages.yml`](.github/workflows/pages.yml) | Builds a MkDocs or Jekyll site and deploys it to GitHub Pages (pull requests only build) |
+| [`pages.yml`](.github/workflows/pages.yml) | Builds a MkDocs or Jekyll site and deploys it to GitHub Pages (pull requests only build); can authenticate to Google Cloud before building |
 | [`python-ci.yml`](.github/workflows/python-ci.yml) | Sets up Python, installs, runs check commands (one per line), with an optional path filter |
 | [`node-ci.yml`](.github/workflows/node-ci.yml) | Sets up Node from `.nvmrc`, runs `npm ci` and check commands, with an optional path filter |
 | [`pypi-publish.yml`](.github/workflows/pypi-publish.yml) | Builds and uploads to PyPI or TestPyPI with twine |
