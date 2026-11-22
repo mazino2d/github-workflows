@@ -127,6 +127,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      id-token: write
     with:
       mode: plan
       root: fixtures/terraform
