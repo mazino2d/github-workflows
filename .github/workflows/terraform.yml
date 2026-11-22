@@ -6,7 +6,15 @@ name: Terraform
 #                 stack, removed again once the stack has nothing to change
 #   mode: apply → on the default branch, or a manual run with `select`
 # Provider download hiccups are retried. The calling job needs: contents read,
-# plus pull-requests write for plan.
+# plus pull-requests write for plan, plus id-token write when
+# gcp-workload-identity-provider is set.
+#
+# Google Cloud (optional): with gcp-workload-identity-provider set, each stack
+# job signs in keylessly as its service account (gcp-service-accounts[stack],
+# else gcp-service-account), which serves both a GCS backend and the google
+# providers. With secrets-uri set, gs://…/<stack path under root>.tfvars.json is
+# copied to ci.auto.tfvars.json when it exists, so Terraform loads it as
+# variable values. Keep that file name in the caller's .gitignore.
 on:
   workflow_call:
     inputs:
@@ -28,6 +36,22 @@ on:
       terraform-version:
         type: string
         default: "1.14.8"
+      gcp-workload-identity-provider:
+        description: Full resource name of the Workload Identity Provider; empty skips Google Cloud sign-in.
+        type: string
+        default: ""
+      gcp-service-account:
+        description: Service account for stacks without an entry in gcp-service-accounts.
+        type: string
+        default: ""
+      gcp-service-accounts:
+        description: JSON object mapping a stack path to the service account it runs as.
+        type: string
+        default: "{}"
+      secrets-uri:
+        description: gs:// prefix holding <stack path under root>.tfvars.json per stack; empty skips it.
+        type: string
+        default: ""
     secrets:
       TF_API_TOKEN:
         required: false
@@ -62,6 +86,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -76,6 +101,29 @@ jobs:
           terraform_version: ${{ inputs.terraform-version }}
           cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
           terraform_wrapper: false
+
+      - name: Sign in to Google Cloud
+        if: inputs.gcp-workload-identity-provider != ''
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ inputs.gcp-workload-identity-provider }}
+          service_account: ${{ fromJSON(inputs.gcp-service-accounts)[matrix.stack] || inputs.gcp-service-account }}
+      - uses: google-github-actions/setup-gcloud@v3
+        if: inputs.secrets-uri != ''
+      - name: Fetch stack variables
+        if: inputs.secrets-uri != ''
+        env:
+          URI: ${{ inputs.secrets-uri }}
+          STACK: ${{ matrix.stack }}
+          ROOT: ${{ inputs.root }}
+        run: |
+          src="${URI%/}/${STACK#"$ROOT"/}.tfvars.json"
+          if gcloud storage objects describe "$src" >/dev/null 2>&1; then
+            gcloud storage cp --no-user-output-enabled "$src" ci.auto.tfvars.json
+            echo "Loaded variables from $src"
+          else
+            echo "No variables at $src"
+          fi
 
       - name: Plan
         id: plan
@@ -135,6 +183,9 @@ jobs:
     if: inputs.mode == 'apply' && needs.detect.outputs.any == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
     concurrency:
       group: terraform-apply-${{ matrix.stack }}
       cancel-in-progress: false
@@ -152,6 +203,29 @@ jobs:
           terraform_version: ${{ inputs.terraform-version }}
           cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
           terraform_wrapper: false
+
+      - name: Sign in to Google Cloud
+        if: inputs.gcp-workload-identity-provider != ''
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ inputs.gcp-workload-identity-provider }}
+          service_account: ${{ fromJSON(inputs.gcp-service-accounts)[matrix.stack] || inputs.gcp-service-account }}
+      - uses: google-github-actions/setup-gcloud@v3
+        if: inputs.secrets-uri != ''
+      - name: Fetch stack variables
+        if: inputs.secrets-uri != ''
+        env:
+          URI: ${{ inputs.secrets-uri }}
+          STACK: ${{ matrix.stack }}
+          ROOT: ${{ inputs.root }}
+        run: |
+          src="${URI%/}/${STACK#"$ROOT"/}.tfvars.json"
+          if gcloud storage objects describe "$src" >/dev/null 2>&1; then
+            gcloud storage cp --no-user-output-enabled "$src" ci.auto.tfvars.json
+            echo "Loaded variables from $src"
+          else
+            echo "No variables at $src"
+          fi
 
       - name: Apply
         run: |
