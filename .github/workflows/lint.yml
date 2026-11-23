@@ -17,6 +17,7 @@ on:
         default: |
           **/*.md
           !**/node_modules/**
+          !**/CHANGELOG.md
 
 permissions:
   contents: read
