@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/mazino2d/github-workflows/compare/v1.2.0...v1.3.0) (2026-11-23)
+
+
+### Features
+
+* **terraform:** read-only plan identity; pin third-party actions by commit SHA ([#8](https://github.com/mazino2d/github-workflows/issues/8)) ([0b30b01](https://github.com/mazino2d/github-workflows/commit/0b30b013fcde64f4b69f6ea3f24be832d75c49b6))
+
 ## [1.2.0](https://github.com/mazino2d/github-workflows/compare/v1.1.0...v1.2.0) (2026-11-23)
 
 
