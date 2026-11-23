@@ -5,9 +5,10 @@ name: Terraform
 #   mode: plan  → on pull requests; the plan is kept as one sticky comment per
 #                 stack, removed again once the stack has nothing to change
 #   mode: apply → on the default branch, or a manual run with `select`
-# Provider download hiccups are retried. The calling job needs: contents read,
-# plus pull-requests write for plan, plus id-token write when
-# gcp-workload-identity-provider is set.
+# Provider download hiccups are retried. Plan and apply wait up to 10 minutes
+# for a stack's state lock (held by an apply, another plan or a local run)
+# instead of failing. The calling job needs: contents read, plus pull-requests
+# write for plan, plus id-token write when gcp-workload-identity-provider is set.
 #
 # Google Cloud (optional): with gcp-workload-identity-provider set, each stack
 # job signs in keylessly as its service account (gcp-service-accounts[stack],
@@ -132,7 +133,7 @@ jobs:
           code=0
           for i in 1 2 3; do
             code=0
-            { terraform init -input=false -no-color && terraform plan -input=false -no-color -detailed-exitcode; } > "$RUNNER_TEMP/plan.txt" 2>&1 || code=$?
+            { terraform init -input=false -no-color && terraform plan -input=false -no-color -lock-timeout=10m -detailed-exitcode; } > "$RUNNER_TEMP/plan.txt" 2>&1 || code=$?
             cat "$RUNNER_TEMP/plan.txt"
             if [ "$code" -ne 1 ] || ! grep -qE "$retryable" "$RUNNER_TEMP/plan.txt"; then break; fi
             [ "$i" -lt 3 ] && { echo "Provider download failed, retrying in 15s ($i/3)"; sleep 15; }
@@ -234,7 +235,7 @@ jobs:
           for i in 1 2 3; do
             code=0
             echo "::group::Attempt $i/3"
-            { terraform init -input=false -no-color && terraform apply -input=false -no-color -auto-approve; } > "$RUNNER_TEMP/apply.txt" 2>&1 || code=$?
+            { terraform init -input=false -no-color && terraform apply -input=false -no-color -lock-timeout=10m -auto-approve; } > "$RUNNER_TEMP/apply.txt" 2>&1 || code=$?
             cat "$RUNNER_TEMP/apply.txt"
             echo "::endgroup::"
             if [ "$code" -eq 0 ] || ! grep -qE "$retryable" "$RUNNER_TEMP/apply.txt"; then break; fi
