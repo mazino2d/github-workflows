@@ -16,6 +16,10 @@ name: Terraform
 # providers. With secrets-uri set, gs://…/<stack path under root>.tfvars.json is
 # copied to ci.auto.tfvars.json when it exists, so Terraform loads it as
 # variable values. Keep that file name in the caller's .gitignore.
+# Plan jobs sign in as gcp-plan-service-accounts[stack], else
+# gcp-plan-service-account, when set: a read-only identity, so a branch cannot
+# change anything through plan. Pair it with plan-lock: false, which plans
+# without the state lock, so that identity needs no write access to the backend.
 on:
   workflow_call:
     inputs:
@@ -53,6 +57,18 @@ on:
         description: gs:// prefix holding <stack path under root>.tfvars.json per stack; empty skips it.
         type: string
         default: ""
+      gcp-plan-service-account:
+        description: Service account plan jobs use instead, for stacks without an entry in gcp-plan-service-accounts.
+        type: string
+        default: ""
+      gcp-plan-service-accounts:
+        description: JSON object mapping a stack path to the service account its plan job runs as.
+        type: string
+        default: "{}"
+      plan-lock:
+        description: Take the state lock during plan; false lets a read-only identity plan.
+        type: boolean
+        default: true
     secrets:
       TF_API_TOKEN:
         required: false
@@ -68,7 +84,7 @@ jobs:
       dirs: ${{ steps.changed.outputs.dirs }}
       any: ${{ steps.changed.outputs.any }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - uses: mazino2d/github-workflows/actions/changed-dirs@v1
@@ -96,8 +112,8 @@ jobs:
       run:
         working-directory: ${{ matrix.stack }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: hashicorp/setup-terraform@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: ${{ inputs.terraform-version }}
           cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
@@ -105,11 +121,11 @@ jobs:
 
       - name: Sign in to Google Cloud
         if: inputs.gcp-workload-identity-provider != ''
-        uses: google-github-actions/auth@v3
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ inputs.gcp-workload-identity-provider }}
-          service_account: ${{ fromJSON(inputs.gcp-service-accounts)[matrix.stack] || inputs.gcp-service-account }}
-      - uses: google-github-actions/setup-gcloud@v3
+          service_account: ${{ fromJSON(inputs.gcp-plan-service-accounts)[matrix.stack] || inputs.gcp-plan-service-account || fromJSON(inputs.gcp-service-accounts)[matrix.stack] || inputs.gcp-service-account }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
         if: inputs.secrets-uri != ''
       - name: Fetch stack variables
         if: inputs.secrets-uri != ''
@@ -128,12 +144,16 @@ jobs:
 
       - name: Plan
         id: plan
+        env:
+          PLAN_LOCK: ${{ inputs.plan-lock }}
         run: |
+          lock=-lock-timeout=10m
+          [ "$PLAN_LOCK" = true ] || lock=-lock=false
           retryable='Failed to install provider|connection reset by peer|Failed to query available provider packages'
           code=0
           for i in 1 2 3; do
             code=0
-            { terraform init -input=false -no-color && terraform plan -input=false -no-color -lock-timeout=10m -detailed-exitcode; } > "$RUNNER_TEMP/plan.txt" 2>&1 || code=$?
+            { terraform init -input=false -no-color && terraform plan -input=false -no-color $lock -detailed-exitcode; } > "$RUNNER_TEMP/plan.txt" 2>&1 || code=$?
             cat "$RUNNER_TEMP/plan.txt"
             if [ "$code" -ne 1 ] || ! grep -qE "$retryable" "$RUNNER_TEMP/plan.txt"; then break; fi
             [ "$i" -lt 3 ] && { echo "Provider download failed, retrying in 15s ($i/3)"; sleep 15; }
@@ -198,8 +218,8 @@ jobs:
       run:
         working-directory: ${{ matrix.stack }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: hashicorp/setup-terraform@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: ${{ inputs.terraform-version }}
           cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
@@ -207,11 +227,11 @@ jobs:
 
       - name: Sign in to Google Cloud
         if: inputs.gcp-workload-identity-provider != ''
-        uses: google-github-actions/auth@v3
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ inputs.gcp-workload-identity-provider }}
           service_account: ${{ fromJSON(inputs.gcp-service-accounts)[matrix.stack] || inputs.gcp-service-account }}
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
         if: inputs.secrets-uri != ''
       - name: Fetch stack variables
         if: inputs.secrets-uri != ''
